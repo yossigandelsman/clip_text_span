@@ -1,5 +1,5 @@
-# Interpreting CLIP's Image Representation via Text-Based Decomposition
-## <br><sub>Official PyTorch Implementation </sub>
+## Interpreting CLIP's Image Representation via Text-Based Decomposition
+Official PyTorch Implementation
 
 ### [Paper](TODO) | [Project Page](https://yossigandelsman.github.io/clip_decomposition/)
 
