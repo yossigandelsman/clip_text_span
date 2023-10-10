@@ -91,9 +91,12 @@ python compute_use_specific_heads.py --model ViT-L-14 --dataset binary_waterbird
 ### BibTeX
 
 ```bibtex
-@article{gandelsmanCLIP, 
-        title={Interpreting CLIP's Image Representation via Text-Based Decomposition},
-        author={Gandelsman, Yossi and Efros, Alexei A. and Steinhardt, Jacob},
-        year={2023}
+@misc{gandelsman2023interpreting,
+      title={Interpreting CLIP's Image Representation via Text-Based Decomposition}, 
+      author={Yossi Gandelsman and Alexei A. Efros and Jacob Steinhardt},
+      year={2023},
+      eprint={2310.05916},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV}
 }
 ```
