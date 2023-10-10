@@ -1,7 +1,7 @@
 ## Interpreting CLIP's Image Representation via Text-Based Decomposition
 Official PyTorch Implementation
 
-### [Paper](TODO) | [Project Page](https://yossigandelsman.github.io/clip_decomposition/)
+### [Paper](https://arxiv.org/abs/2310.05916) | [Project Page](https://yossigandelsman.github.io/clip_decomposition/)
 
 [Yossi Gandelsman](https://yossigandelsman.github.io/), [Alexei A. Efros](https://people.eecs.berkeley.edu/~efros/) and [Jacob Steinhardt](https://jsteinhardt.stat.berkeley.edu/)
 
@@ -93,9 +93,12 @@ Please see a demo for the spatial decomposition of CLIP in `demo.ipynb`.
 ### BibTeX
 
 ```bibtex
-@article{gandelsmanCLIP, 
-        title={Interpreting CLIP's Image Representation via Text-Based Decomposition},
-        author={Gandelsman, Yossi and Efros, Alexei A. and Steinhardt, Jacob},
-        year={2023}
+@misc{gandelsman2023interpreting,
+      title={Interpreting CLIP's Image Representation via Text-Based Decomposition}, 
+      author={Yossi Gandelsman and Alexei A. Efros and Jacob Steinhardt},
+      year={2023},
+      eprint={2310.05916},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV}
 }
 ```
