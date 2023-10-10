@@ -87,6 +87,8 @@ python compute_text_projection.py  --dataset binary_waterbirds --device cuda:0 -
 python compute_use_specific_heads.py --model ViT-L-14 --dataset binary_waterbirds 
 ```
 
+### Spatial decomposition
+Please see a demo for the spatial decomposition of CLIP in `demo.ipynb`. 
 
 ### BibTeX
 
