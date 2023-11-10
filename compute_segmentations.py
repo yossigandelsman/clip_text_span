@@ -13,8 +13,7 @@ from pathlib import Path
 import tqdm
 from utils.factory import create_model_and_transforms
 from utils.imagenet_segmentation import ImagenetSegmentation
-from utils.segmentation_utils import (IoU, hm_to_rgb, 
-                                      batch_pix_accuracy, batch_intersection_union, 
+from utils.segmentation_utils import (batch_pix_accuracy, batch_intersection_union, 
                                       get_ap_scores, Saver)
 from sklearn.metrics import precision_recall_curve
 from prs_hook import hook_prs_logger
@@ -27,6 +26,7 @@ def get_args_parser():
                         default=False,
                         help='')
     parser.add_argument('--train_dataset', type=str, default='imagenet_seg', help='The name of the dataset')
+    parser.add_argument('--classifier_dataset', type=str, default='imagenet', help='The name of the classifier dataset')
     parser.add_argument('--image_size', default=224, type=int, help='Image size')
     parser.add_argument('--thr', type=float, default=0.,
                         help='threshold')
@@ -178,7 +178,7 @@ def main(args):
     # Saver
     saver = _create_saver_and_folders(args) 
     # Classifier
-    with open(os.path.join(args.classifier_dir, f'classifier_{args.model}.npy'), 'rb') as f:
+    with open(os.path.join(args.classifier_dir, f'{args.classifier_dataset}_classifier_{args.model}.npy'), 'rb') as f:
         classifier = np.load(f)
     # Eval in loop
     total_inter, total_union, total_correct, total_label = np.int64(0), np.int64(0), np.int64(0), np.int64(0)
