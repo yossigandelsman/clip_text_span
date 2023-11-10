@@ -16,7 +16,7 @@ from torch.utils.checkpoint import checkpoint
 
 from utils.modified_resnet import ModifiedResNet
 from utils.timm_model import TimmModel
-from utils.transformer import LayerNorm, QuickGELU, VisionTransformer, TextTransformer
+from utils.transformer import LayerNorm, QuickGELU, VisionTransformer, TextTransformer, Attention
 from utils.misc import to_2tuple
 from utils.hook import HookManager
 
@@ -46,6 +46,40 @@ class CLIPVisionCfg:
     timm_proj_bias: bool = False  # enable bias final projection
     timm_drop: float = 0.  # head dropout
     timm_drop_path: Optional[float] = None  # backbone stochastic depth
+
+
+
+
+def convert_weights_to_lp(model: nn.Module, dtype=torch.float16):
+    """Convert applicable model parameters to low-precision (bf16 or fp16)"""
+
+    def _convert_weights(l):
+        if isinstance(l, (nn.Conv1d, nn.Conv2d, nn.Linear)):
+            l.weight.data = l.weight.data.to(dtype)
+            if l.bias is not None:
+                l.bias.data = l.bias.data.to(dtype)
+
+        if isinstance(l, (nn.MultiheadAttention, Attention)):
+            for attr in [*[f"{s}_proj_weight" for s in ["in", "q", "k", "v"]], "in_proj_bias", "bias_k", "bias_v"]:
+                tensor = getattr(l, attr)
+                if tensor is not None:
+                    tensor.data = tensor.data.to(dtype)
+
+        if isinstance(l, (CLIP, TextTransformer)):
+            # convert text nn.Parameter projections
+            attr = getattr(l, "text_projection", None)
+            if attr is not None:
+                attr.data = attr.data.to(dtype)
+
+        if isinstance(l, VisionTransformer):
+            # convert vision nn.Parameter projections
+            attr = getattr(l, "proj", None)
+            if attr is not None:
+                attr.data = attr.data.to(dtype)
+
+    model.apply(_convert_weights)
+
+convert_weights_to_fp16 = convert_weights_to_lp  # backwards compat
 
 
 @dataclass
