@@ -11,6 +11,7 @@ from torchvision.datasets import ImageNet, ImageFolder
 from utils.factory import create_model_and_transforms, get_tokenizer
 from utils.binary_waterbirds import BinaryWaterbirds
 from prs_hook import hook_prs_logger
+from torchvision.datasets import CIFAR100, CIFAR10
 
 
 def get_args_parser():
@@ -24,7 +25,7 @@ def get_args_parser():
     # Dataset parameters
     parser.add_argument('--data_path', default='/shared/group/ilsvrc', type=str,
                         help='dataset path')
-    parser.add_argument('--dataset', type=str, default='imagenet', 
+    parser.add_argument('--dataset', type=str, default='CIFAR100', 
                         help='imagenet, cub or waterbirds')
     parser.add_argument('--num_workers', default=10, type=int)
     parser.add_argument('--output_dir', default='./output_dir',
@@ -54,6 +55,10 @@ def main(args):
         ds = ImageNet(root=args.data_path, split="val", transform=preprocess)
     elif args.dataset == 'binary_waterbirds':
         ds = BinaryWaterbirds(root=args.data_path, split="test", transform=preprocess)
+    elif args.dataset == 'CIFAR100':
+        ds = CIFAR100(root=args.data_path, download=True, train=False, transform=preprocess)
+    elif args.dataset == 'CIFAR10':
+        ds = CIFAR10(root=args.data_path, download=True, train=False, transform=preprocess)
     else:
         ds = ImageFolder(root=args.data_path, transform=preprocess)
     dataloader = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
@@ -72,8 +77,11 @@ def main(args):
             mlps = mlps.detach().cpu().numpy() # [b, l+1, d]
             attention_results.append(np.sum(attentions, axis=2)) # Reduce the spatial dimension 
             mlp_results.append(mlps)
+            print(attentions.sum(axis=(1,2,3)) + mlps.sum(axis=1))
+            print((representation / representation.norm(dim=-1, keepdim=True).detach()).cpu().numpy())
+            raise ValueError
             cls_to_cls_results.append(np.sum(attentions[:,:,0], axis=2)) # Store the cls->cls attention, reduce the heads
-        
+            raise ValueError()
     with open(os.path.join(args.output_dir, f'{args.dataset}_attn_{args.model}.npy'), 'wb') as f:
         np.save(f, np.concatenate(attention_results, axis=0))
     with open(os.path.join(args.output_dir, f'{args.dataset}_mlp_{args.model}.npy'), 'wb') as f:
