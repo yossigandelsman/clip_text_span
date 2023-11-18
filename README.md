@@ -81,7 +81,7 @@ To download the Waterbirds datasets, run:
 wget https://nlp.stanford.edu/data/dro/waterbird_complete95_forest2water2.tar.gz
 tar -xf  waterbird_complete95_forest2water2.tar.gz
 ```
-To compute the overall accuracy (not the accuracy per class!), run:
+To compute the overall accuracy, run:
 ```bash
 python compute_text_projection.py  --dataset binary_waterbirds --device cuda:0 --model ViT-L-14 --pretrained laion2b_s32b_b82k
 python compute_use_specific_heads.py --model ViT-L-14 --dataset binary_waterbirds 
