@@ -7,11 +7,10 @@ from pathlib import Path
 
 from torch.utils.data import DataLoader
 import tqdm
-from torchvision.datasets import ImageNet, ImageFolder
 from utils.factory import create_model_and_transforms, get_tokenizer
 from utils.binary_waterbirds import BinaryWaterbirds
 from prs_hook import hook_prs_logger
-from torchvision.datasets import CIFAR100, CIFAR10
+from torchvision.datasets import CIFAR100, CIFAR10, ImageNet, ImageFolder
 
 
 def get_args_parser():
