@@ -93,12 +93,12 @@ Please see a demo for the spatial decomposition of CLIP in `demo.ipynb`.
 ### BibTeX
 
 ```bibtex
-@misc{gandelsman2023interpreting,
-      title={Interpreting CLIP's Image Representation via Text-Based Decomposition}, 
-      author={Yossi Gandelsman and Alexei A. Efros and Jacob Steinhardt},
-      year={2023},
-      eprint={2310.05916},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV}
+@inproceedings{
+      gandelsman2024interpreting,
+      title={Interpreting {CLIP}'s Image Representation via Text-Based Decomposition},
+      author={Anonymous},
+      booktitle={The Twelfth International Conference on Learning Representations},
+      year={2024},
+      url={https://openreview.net/forum?id=5Ca9sSzuDp}
 }
 ```
