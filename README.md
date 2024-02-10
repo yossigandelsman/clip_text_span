@@ -96,7 +96,7 @@ Please see a demo for the spatial decomposition of CLIP in `demo.ipynb`.
 @inproceedings{
       gandelsman2024interpreting,
       title={Interpreting {CLIP}'s Image Representation via Text-Based Decomposition},
-      author={Anonymous},
+      author={Yossi Gandelsman and Alexei A. Efros and Jacob Steinhardt},
       booktitle={The Twelfth International Conference on Learning Representations},
       year={2024},
       url={https://openreview.net/forum?id=5Ca9sSzuDp}
