@@ -419,6 +419,54 @@ class MultiheadAttention(nn.Module):
         )
         return x
 
+    def forward_per_head_no_spatial(self, x, attn_mask=None):
+        B, N, C = x.shape
+        q_weight, k_weight, v_weight = self._split_qkv_weight()
+        q_bias, k_bias, v_bias = self._split_qkv_bias()
+        q = self.hook(
+            "in_q_bias.post",
+            ret=self.hook("in_q.post", ret=torch.einsum("bnc,hdc->bhnd", x, q_weight))
+            + q_bias,
+        )
+        k = self.hook(
+            "in_k_bias.post",
+            ret=self.hook("in_k.post", ret=torch.einsum("bnc,hdc->bhnd", x, k_weight))
+            + k_bias,
+        )
+        v = self.hook(
+            "in_v_bias.post",
+            ret=self.hook("in_v.post", ret=torch.einsum("bnc,hdc->bhnd", x, v_weight))
+            + v_bias,
+        )  # (B, self.num_heads, N, self.head_dim)
+        dk = q.size()[-1]
+        q = q / math.sqrt(dk)
+        q = self.hook("q_norm", ret=q)
+        attn = q @ k.transpose(-2, -1)
+        attn = self.hook("attention.pre_mask", ret=attn)
+        if attn_mask is not None:
+            attn += attn_mask
+        attn = self.hook("attention.post_mask", ret=attn)
+        attn = attn.softmax(dim=-1)
+        attn = self.hook("attention.post_softmax", ret=attn)  # [B, H, N, N]
+        x = torch.einsum(
+            "bhnm,bhmc->bnhc", attn, v
+        )  # We also switch here back from head-first to n-first
+        x = self.hook("attn_v", ret=x)
+        x = self.hook(
+            "out.post",
+            ret=torch.einsum(
+                "bnhc,dhc->bnhd",
+                x,
+                self.out_proj.weight.reshape(
+                    self.embed_dim, self.num_heads, self.head_dim
+                ),
+            ),
+        )
+        x = self.hook("out.post_collapse", ret=x.sum(axis=2))
+        x = self.hook("out.post_bias", ret=x + self.out_proj.bias)
+        return x
+
+
     def forward_per_head(self, x, attn_mask=None):
         B, N, C = x.shape
         q_weight, k_weight, v_weight = self._split_qkv_weight()
@@ -528,8 +576,12 @@ class MultiheadAttention(nn.Module):
             x = self.forward_qkv(x, attn_mask=attn_mask)
         elif method == "head":
             x = self.forward_per_head(x, attn_mask=attn_mask)
+        elif method == "head_no_spatial":
+            x = self.forward_per_head_no_spatial(x, attn_mask=attn_mask)
         elif method == "ov_circuit":
             x = self.forward_ov_circuit(x, attn_mask=attn_mask)
+        else:
+            raise NotImplementedError('Unknown attention method')
         self.hook.finalize()
 
         return x

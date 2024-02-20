@@ -90,6 +90,10 @@ python compute_use_specific_heads.py --model ViT-L-14 --dataset binary_waterbird
 ### Spatial decomposition
 Please see a demo for the spatial decomposition of CLIP in `demo.ipynb`. 
 
+
+### Nearest neighbors search
+Please see a nearest neighbors search demo in `nns.ipynb`.
+
 ### BibTeX
 
 ```bibtex
