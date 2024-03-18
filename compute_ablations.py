@@ -38,21 +38,16 @@ def get_args_parser():
 
 
 def main(args):
-    with open(
-        os.path.join(args.input_dir, f"{args.dataset}_attn_{args.model}.npy"), "rb"
-    ) as f:
-        attns = np.load(f, mmap_mode="r")  # [b, l, h, d]
-    with open(
-        os.path.join(args.input_dir, f"{args.dataset}_mlp_{args.model}.npy"), "rb"
-    ) as f:
-        mlps = np.load(f, mmap_mode="r")  # [b, l+1, d]
+    
+    attns = np.load(os.path.join(args.input_dir, f"{args.dataset}_attn_{args.model}.npy"), mmap_mode="r")  # [b, l, h, d]
+    mlps = np.load(os.path.join(args.input_dir, f"{args.dataset}_mlp_{args.model}.npy"), mmap_mode="r")  # [b, l+1, d]
     with open(
         os.path.join(args.input_dir, f"{args.dataset}_classifier_{args.model}.npy"),
         "rb",
     ) as f:
         classifier = np.load(f)
     if args.dataset == "imagenet":
-        labels = np.array([i // 50 for i in range(attns.shape[0])])
+        labels = np.array([i // 5 for i in range(attns.shape[0])])
     else:
         with open(
             os.path.join(args.input_dir, f"{args.dataset}_labels.npy"), "rb"
