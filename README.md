@@ -39,7 +39,7 @@ python compute_ablations.py --model ViT-L-14
 python compute_ablations.py --model ViT-B-16
 ```
 
-### Convert text labels to represntation 
+### Convert text labels to representation 
 To convert the text labels for <i>TextSpan</i> to CLIP text representations, please run:
 
 ```bash
@@ -83,6 +83,7 @@ tar -xf  waterbird_complete95_forest2water2.tar.gz
 ```
 To compute the overall accuracy, run:
 ```bash
+python compute_prs.py --dataset binary_waterbirds --device cuda:0 --model ViT-L-14 --pretrained laion2b_s32b_b82k --data_path <PATH>
 python compute_text_projection.py  --dataset binary_waterbirds --device cuda:0 --model ViT-L-14 --pretrained laion2b_s32b_b82k
 python compute_use_specific_heads.py --model ViT-L-14 --dataset binary_waterbirds 
 ```
@@ -92,7 +93,7 @@ Please see a demo for the spatial decomposition of CLIP in `demo.ipynb`.
 
 
 ### Nearest neighbors search
-Please see a nearest neighbors search demo in `nns.ipynb`.
+Please see the nearest neighbors search demo in `nns.ipynb`.
 
 ### BibTeX
 
