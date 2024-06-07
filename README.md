@@ -7,6 +7,8 @@ Official PyTorch Implementation
 
 ![Teaser](images/teaser.png)
 
+🔥 Check out [our latest work](https://yossigandelsman.github.io/clip_neurons/) on interpreting neurons in CLIP with text.
+
 ### Setup
 We provide an [`environment.yml`](environment.yml) file that can be used to create a Conda environment:
 
