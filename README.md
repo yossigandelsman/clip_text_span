@@ -98,12 +98,11 @@ Please see the nearest neighbors search demo in `nns.ipynb`.
 ### BibTeX
 
 ```bibtex
-@misc{gandelsman2024neurons,
-      title={Interpreting the Second-Order Effects of Neurons in CLIP}, 
+@inproceedings{
+      gandelsman2024interpreting,
+      title={Interpreting {CLIP}'s Image Representation via Text-Based Decomposition},
       author={Yossi Gandelsman and Alexei A. Efros and Jacob Steinhardt},
+      booktitle={The Twelfth International Conference on Learning Representations},
       year={2024},
-      eprint={2406.04341},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV}
-}
+      url={https://openreview.net/forum?id=5Ca9sSzuDp}
 ```
