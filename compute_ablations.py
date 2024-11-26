@@ -47,7 +47,7 @@ def main(args):
     ) as f:
         classifier = np.load(f)
     if args.dataset == "imagenet":
-        labels = np.array([i // 5 for i in range(attns.shape[0])])
+        labels = np.array([i // 50 for i in range(attns.shape[0])])
     else:
         with open(
             os.path.join(args.input_dir, f"{args.dataset}_labels.npy"), "rb"
