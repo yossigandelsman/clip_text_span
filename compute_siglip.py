@@ -75,15 +75,18 @@ def compute_zeroshot_weights(model, model_name, tokenizer, classnames, device, t
 class PRSHook:
     def __init__(self, collapse_attention: bool = False):
         self.attention_records = []
+        self.attention_without_class_token_records = []
         self.mlp_records = []
         self.collapse_attention = collapse_attention
     
     def save_attention(self, ret, **kwargs):
         if self.collapse_attention:
             self.attention_records.append(ret.sum(axis=[2,3]).detach().cpu())
+            self.attention_without_class_token_records.append(ret[:, :, 1:].sum(axis=[2,3]).detach().cpu())
         else:
             self.attention_records.append(ret.detach().cpu())
         return ret
+    
     
     def save_mlp(self, ret, **kwargs):
         self.mlp_records.append(ret.detach().cpu())
@@ -92,7 +95,8 @@ class PRSHook:
     def finalize(self):
         self.attention_records = torch.cat(self.attention_records, dim=0)
         self.mlp_records = torch.cat(self.mlp_records, dim=0)
-        return {"attention_records": self.attention_records, "mlp_records": self.mlp_records}
+        self.attention_without_class_token_records = torch.cat(self.attention_without_class_token_records, dim=0)
+        return {"attention_records": self.attention_records, "mlp_records": self.mlp_records, "attention_without_class_token_records": self.attention_without_class_token_records}
 
 def compute_accuracy(features, labels, zeroshot_weights):
     zeroshot_weights = zeroshot_weights.to(features.device)  # (1000, D)
@@ -143,16 +147,15 @@ def main(args):
     # Compute representation accuracy
     representation_results = []
     for i, (inputs, labels) in enumerate(tqdm.tqdm(dataloader)):
-        with torch.no_grad():
-            inputs['pixel_values'] = inputs['pixel_values'].squeeze(1).to(args.device)
-            outputs = model(**inputs)
-            representation_results.append(outputs.pooler_output)
-            # Save labels for accuracy calculation
-            if i == 0:
-                all_labels = labels.clone()
-            else:
-                all_labels = torch.cat([all_labels, labels], dim=0)
-    
+        inputs['pixel_values'] = inputs['pixel_values'].squeeze(1).to(args.device)
+        outputs = model(**inputs)
+        representation_results.append(outputs.pooler_output)
+        # Save labels for accuracy calculation
+        if i == 0:
+            all_labels = labels.clone()
+        else:
+            all_labels = torch.cat([all_labels, labels], dim=0)
+        
     representation_results = torch.cat(representation_results, dim=0)  # (N, D)
     constant_bias = model.vision_model.head.attention.out_proj.bias.detach().cpu()
     # To be more percise, there is also a bias in the mlp output
@@ -174,6 +177,11 @@ def main(args):
     print("Computing accuracy (attention)...")
     acc, correct, total = compute_accuracy(attn_results[:, 0] + constant_bias + mlp_bias, all_labels, zeroshot_weights)
     print(f"Top-1 attention accuracy: {acc:.2f}% ({correct}/{total})")
+    
+    # Compute attention without class token accuracy
+    print("Computing accuracy (attention without class token)...")
+    acc, correct, total = compute_accuracy(attn_and_mlp_results["attention_without_class_token_records"][:, 0] + constant_bias + mlp_bias, all_labels, zeroshot_weights)
+    print(f"Top-1 attention without class token accuracy: {acc:.2f}% ({correct}/{total})")
     
     print("Computing accuracy (attention + mlp for sanity check)...")
     acc, correct, total = compute_accuracy(mlp_results[:, 0] + attn_results[:, 0] + constant_bias, all_labels, zeroshot_weights)
