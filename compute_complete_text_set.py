@@ -145,7 +145,7 @@ def main(args):
     ) as w:
         for i in tqdm.trange(attns.shape[1] - args.num_of_last_layers, attns.shape[1]):
             for head in range(attns.shape[2]):
-                results, images = replace_with_iterative_removal(
+                reconstruct, results = replace_with_iterative_removal(
                     attns[:, i, head],
                     text_features,
                     lines,
@@ -153,12 +153,12 @@ def main(args):
                     args.w_ov_rank,
                     args.device,
                 )
-                attns[:, i, head] = results
-                all_images |= set(images)
+                attns[:, i, head] = reconstruct
+                all_images |= set(results)
                 w.write(f"------------------\n")
                 w.write(f"Layer {i}, Head {head}\n")
                 w.write(f"------------------\n")
-                for text in images:
+                for text in results:
                     w.write(f"{text}\n")
 
         mean_ablated_and_replaced = mlps.sum(axis=1) + attns.sum(axis=(1, 2))

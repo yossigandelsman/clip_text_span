@@ -16,7 +16,7 @@ from utils.openai_templates import OPENAI_IMAGENET_TEMPLATES
 from utils.imagenet_classes import imagenet_classes
 import torch.nn.functional as F
 from typing import Union, Any
-
+from compute_complete_text_set import replace_with_iterative_removal
 
 class ImageNet(ImageFolder):
     def __init__(self, root: Union[str, Path], split: str = "train", **kwargs: Any) -> None:
@@ -49,6 +49,7 @@ def get_args_parser():
         "--output_dir", default="./output_dir", help="path where to save"
     )
     parser.add_argument("--device", default="cuda:0", help="device to use for testing")
+    parser.add_argument("--text_descriptions", default="text_descriptions/image_descriptions_general.txt", type=str, help="text descriptions to use")
     return parser
 
 
@@ -71,22 +72,40 @@ def compute_zeroshot_weights(model, model_name, tokenizer, classnames, device, t
     zeroshot_weights = torch.stack(zeroshot_weights, dim=0)
     return zeroshot_weights
 
+@torch.no_grad()
+def get_text_features(model, model_name, tokenizer, lines, 
+                      device, batch_size):
+    max_length = {
+        'google/siglip-so400m-patch14-384': 64,
+        'google/siglip-base-patch16-224': 64
+    }
+    model.eval()
+    zeroshot_weights = []
+    for i in tqdm.trange(0, len(lines), batch_size):
+        texts = [l.replace('\n', '') for l in lines[i:i+batch_size]]
+        inputs = tokenizer(texts, truncation=False, padding="max_length", max_length=max_length[model_name], return_tensors="pt")
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+        outputs = model(**inputs)
+        class_embedding = F.normalize(outputs.pooler_output, dim=-1)
+        zeroshot_weights.append(class_embedding.detach().cpu())
+    zeroshot_weights = torch.concatenate(zeroshot_weights, dim=0)
+    return zeroshot_weights
+
+
 # Minimal PRS hook for out.post and mlp_output
 class PRSHook:
-    def __init__(self, collapse_attention: bool = False):
+    def __init__(self, collapse_spatial: bool = False):
         self.attention_records = []
-        self.attention_without_class_token_records = []
         self.mlp_records = []
-        self.collapse_attention = collapse_attention
+        self.collapse_spatial = collapse_spatial
     
     def save_attention(self, ret, **kwargs):
-        if self.collapse_attention:
-            self.attention_records.append(ret.sum(axis=[2,3]).detach().cpu())
-            self.attention_without_class_token_records.append(ret[:, :, 1:].sum(axis=[2,3]).detach().cpu())
+        if self.collapse_spatial:
+            to_return = ret.sum(axis=2).detach().cpu()
+            self.attention_records.append(to_return)
         else:
             self.attention_records.append(ret.detach().cpu())
         return ret
-    
     
     def save_mlp(self, ret, **kwargs):
         self.mlp_records.append(ret.detach().cpu())
@@ -95,8 +114,7 @@ class PRSHook:
     def finalize(self):
         self.attention_records = torch.cat(self.attention_records, dim=0)
         self.mlp_records = torch.cat(self.mlp_records, dim=0)
-        self.attention_without_class_token_records = torch.cat(self.attention_without_class_token_records, dim=0)
-        return {"attention_records": self.attention_records, "mlp_records": self.mlp_records, "attention_without_class_token_records": self.attention_without_class_token_records}
+        return {"attention_records": self.attention_records, "mlp_records": self.mlp_records}
 
 def compute_accuracy(features, labels, zeroshot_weights):
     zeroshot_weights = zeroshot_weights.to(features.device)  # (1000, D)
@@ -127,18 +145,18 @@ def main(args):
     )
     # Zeroshot weights for ImageNet
     print("Computing zeroshot weights for ImageNet...")
+    text_model = SiglipTextModel.from_pretrained(args.model)
+    text_model.to(args.device)
+    tokenizer = AutoTokenizer.from_pretrained(args.model)
     zeroshot_weights_path = os.path.join(args.output_dir, f"imagenet_zeroshot_weights_{args.model.replace('/', '_')}.npy")
     if os.path.exists(zeroshot_weights_path):
         print(f"Loading zeroshot weights from {zeroshot_weights_path}")
         zeroshot_weights = torch.from_numpy(np.load(zeroshot_weights_path))
     else:
-        text_model = SiglipTextModel.from_pretrained(args.model)
-        text_model.to(args.device)
-        tokenizer = AutoTokenizer.from_pretrained(args.model)
         zeroshot_weights = compute_zeroshot_weights(text_model, args.model, tokenizer, imagenet_classes, args.device, templates=OPENAI_IMAGENET_TEMPLATES)
         np.save(zeroshot_weights_path, zeroshot_weights.numpy())
 
-    prs_hook = PRSHook(collapse_attention=True)
+    prs_hook = PRSHook(collapse_spatial=True)
     
     # # Register the hook on the model's hook manager
     model.hook.register('pooling_head.attention.out.post', prs_hook.save_attention)
@@ -155,7 +173,6 @@ def main(args):
             all_labels = labels.clone()
         else:
             all_labels = torch.cat([all_labels, labels], dim=0)
-        
     representation_results = torch.cat(representation_results, dim=0)  # (N, D)
     constant_bias = model.vision_model.head.attention.out_proj.bias.detach().cpu()
     # To be more percise, there is also a bias in the mlp output
@@ -175,22 +192,50 @@ def main(args):
     
     # Compute attention accuracy
     print("Computing accuracy (attention)...")
-    acc, correct, total = compute_accuracy(attn_results[:, 0] + constant_bias + mlp_bias, all_labels, zeroshot_weights)
+    acc, correct, total = compute_accuracy(attn_results.sum(axis=2)[:, 0] + constant_bias + mlp_bias, all_labels, zeroshot_weights)
     print(f"Top-1 attention accuracy: {acc:.2f}% ({correct}/{total})")
     
-    # Compute attention without class token accuracy
-    print("Computing accuracy (attention without class token)...")
-    acc, correct, total = compute_accuracy(attn_and_mlp_results["attention_without_class_token_records"][:, 0] + constant_bias + mlp_bias, all_labels, zeroshot_weights)
-    print(f"Top-1 attention without class token accuracy: {acc:.2f}% ({correct}/{total})")
-    
+    # Compute attention + mlp accuracy
     print("Computing accuracy (attention + mlp for sanity check)...")
-    acc, correct, total = compute_accuracy(mlp_results[:, 0] + attn_results[:, 0] + constant_bias, all_labels, zeroshot_weights)
+    acc, correct, total = compute_accuracy(mlp_results[:, 0] + attn_results.sum(axis=2)[:, 0] + constant_bias, all_labels, zeroshot_weights)
     print(f"Top-1 attention + mlp accuracy: {acc:.2f}% ({correct}/{total})")
     
     # Optionally, save to disk:
     if args.save_everything:
         torch.save(attn_and_mlp_results, os.path.join(args.output_dir, f"siglip_{args.model.replace('/', '_')}_prs.pt"))
-        
+    
+    # Compute text features
+    with open(args.text_descriptions, 'r') as f:
+            lines = f.readlines()
+    base, name = os.path.split(args.text_descriptions)
+    name = name.replace('.txt', '')
+    text_features_path = os.path.join(args.output_dir, f'{name}_{args.model.replace('/', '_')}.npy')
+    if os.path.exists(text_features_path):
+        print(f"Loading text features from {text_features_path}")
+        text_features = np.load(text_features_path)
+    else:
+        text_features = get_text_features(text_model, args.model, tokenizer, lines, args.device, args.batch_size).detach().cpu().numpy()
+        with open(text_features_path, 'wb') as f:
+            np.save(f, text_features)
+        print(f"Saved text features to {text_features_path}")
+    print(f"Text features shape: {text_features.shape}")
+    non_spatial_results = attn_results[:, 0] # (N, h, D)
+    print(f"Non-spatial results shape: {non_spatial_results.shape}")
+    print(f"Text features shape: {text_features.shape}")
+    for head in range(non_spatial_results.shape[1]):
+        reconstruct, results = replace_with_iterative_removal(
+            non_spatial_results[:, head].detach().cpu().numpy(),
+            text_features,
+            lines,
+            non_spatial_results.shape[-1],
+            non_spatial_results.shape[-1],
+            args.device)
+        print('--------------------------------')
+        print(f"Head {head}")
+        for text in results:
+            print(text.replace('\n', ''))
+        print("--------------------------------")
+                                   
 
 if __name__ == "__main__":
     args = get_args_parser()
