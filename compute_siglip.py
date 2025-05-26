@@ -95,7 +95,6 @@ class PRSHook:
         return {"attention_records": self.attention_records, "mlp_records": self.mlp_records}
 
 def compute_accuracy(features, labels, zeroshot_weights):
-    features = torch.cat(features, dim=0)  # (N, D)
     zeroshot_weights = zeroshot_weights.to(features.device)  # (1000, D)
     logits = features @ zeroshot_weights.t()  # (N, 1000)
     preds = logits.argmax(dim=1)
@@ -124,56 +123,65 @@ def main(args):
     )
     # Zeroshot weights for ImageNet
     print("Computing zeroshot weights for ImageNet...")
-    text_model = SiglipTextModel.from_pretrained(args.model)
-    text_model.to(args.device)
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
-    zeroshot_weights = compute_zeroshot_weights(text_model, args.model, tokenizer, imagenet_classes, args.device, templates=OPENAI_IMAGENET_TEMPLATES)
-    np.save(os.path.join(args.output_dir, f"imagenet_zeroshot_weights_{args.model.replace('/', '_')}.npy"), zeroshot_weights.numpy())
+    zeroshot_weights_path = os.path.join(args.output_dir, f"imagenet_zeroshot_weights_{args.model.replace('/', '_')}.npy")
+    if os.path.exists(zeroshot_weights_path):
+        print(f"Loading zeroshot weights from {zeroshot_weights_path}")
+        zeroshot_weights = torch.from_numpy(np.load(zeroshot_weights_path))
+    else:
+        text_model = SiglipTextModel.from_pretrained(args.model)
+        text_model.to(args.device)
+        tokenizer = AutoTokenizer.from_pretrained(args.model)
+        zeroshot_weights = compute_zeroshot_weights(text_model, args.model, tokenizer, imagenet_classes, args.device, templates=OPENAI_IMAGENET_TEMPLATES)
+        np.save(zeroshot_weights_path, zeroshot_weights.numpy())
 
-    
     prs_hook = PRSHook(collapse_attention=True)
     
     # # Register the hook on the model's hook manager
     model.hook.register('pooling_head.attention.out.post', prs_hook.save_attention)
     model.hook.register('pooling_head.mlp_output', prs_hook.save_mlp)
-
-    attention_results = []
-    representation_results = []
-    mlp_results = []
     
+    # Compute representation accuracy
+    representation_results = []
     for i, (inputs, labels) in enumerate(tqdm.tqdm(dataloader)):
         with torch.no_grad():
             inputs['pixel_values'] = inputs['pixel_values'].squeeze(1).to(args.device)
             outputs = model(**inputs)
-            representation_results.append(F.normalize(outputs.pooler_output, dim=-1))
+            representation_results.append(outputs.pooler_output)
             # Save labels for accuracy calculation
             if i == 0:
                 all_labels = labels.clone()
             else:
                 all_labels = torch.cat([all_labels, labels], dim=0)
-
-    # Compute accuracy
+    
+    representation_results = torch.cat(representation_results, dim=0)  # (N, D)
+    constant_bias = model.vision_model.head.attention.out_proj.bias.detach().cpu()
+    # To be more percise, there is also a bias in the mlp output
+    mlp_bias = model.vision_model.head.mlp.fc2.bias.detach().cpu()
+    # Compute representation accuracy
     print("Computing accuracy (representation)...")
     acc, correct, total = compute_accuracy(representation_results, all_labels, zeroshot_weights)
     print(f"Top-1 representation accuracy: {acc:.2f}% ({correct}/{total})")
 
-    # Compute accuracy mlp
+    attn_and_mlp_results = prs_hook.finalize()
+    attn_results = attn_and_mlp_results["attention_records"]
+    mlp_results = attn_and_mlp_results["mlp_records"]
+    # Compute mlp accuracy
     print("Computing accuracy (mlp)...")
-    acc, correct, total = compute_accuracy(mlp_results[:, 0], all_labels, zeroshot_weights)
+    acc, correct, total = compute_accuracy(mlp_results[:, 0] + constant_bias, all_labels, zeroshot_weights)
     print(f"Top-1 mlp accuracy: {acc:.2f}% ({correct}/{total})")
     
-    # Compute accuracy attention
+    # Compute attention accuracy
     print("Computing accuracy (attention)...")
-    acc, correct, total = compute_accuracy(attention_results[:, 0], all_labels, zeroshot_weights)
+    acc, correct, total = compute_accuracy(attn_results[:, 0] + constant_bias + mlp_bias, all_labels, zeroshot_weights)
     print(f"Top-1 attention accuracy: {acc:.2f}% ({correct}/{total})")
     
     print("Computing accuracy (attention + mlp for sanity check)...")
-    acc, correct, total = compute_accuracy(mlp_results[:, 0] + attention_results[:, 0], all_labels, zeroshot_weights)
+    acc, correct, total = compute_accuracy(mlp_results[:, 0] + attn_results[:, 0] + constant_bias, all_labels, zeroshot_weights)
     print(f"Top-1 attention + mlp accuracy: {acc:.2f}% ({correct}/{total})")
     
     # Optionally, save to disk:
     if args.save_everything:
-        torch.save(prs_hook.finalize(), os.path.join(args.output_dir, f"siglip_{args.model.replace('/', '_')}_prs.pt"))
+        torch.save(attn_and_mlp_results, os.path.join(args.output_dir, f"siglip_{args.model.replace('/', '_')}_prs.pt"))
         
 
 if __name__ == "__main__":
