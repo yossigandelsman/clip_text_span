@@ -52,10 +52,10 @@ def get_args_parser():
 
 
 def compute_zeroshot_weights(model, model_name, tokenizer, classnames, device, templates, use_format=False):
-    max_length = {'google/siglip2-so400m-patch14-384': 64, 
-                  'google/siglip2-base-patch16-224': 64,
-                  'google/siglip-so400m-patch14-384': 64,
-                  'google/siglip-so400m-patch16-224': 64}
+    max_length = {
+        'google/siglip-so400m-patch14-384': 64,
+        'google/siglip-base-patch16-224': 64
+    }
     model.eval()
     zeroshot_weights = []
     with torch.no_grad():

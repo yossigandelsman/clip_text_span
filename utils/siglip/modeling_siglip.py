@@ -21,7 +21,7 @@ from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from transformers.utils import ModelOutput, can_return_tuple, logging, torch_int
 from utils.siglip.configuration_siglip import SiglipConfig, SiglipTextConfig, SiglipVisionConfig
 from utils.hook import HookManager
-
+import torch.nn.functional as F
 
 logger = logging.get_logger(__name__)
 
@@ -799,6 +799,54 @@ class SiglipVisionTransformer(nn.Module):
         )
 
 
+class MultiHeadAttention(nn.Module):
+    def __init__(self, d_model, num_heads, bias=True, hook: Optional[HookManager] = None):
+        super(MultiHeadAttention, self).__init__()
+        assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
+        self.hook = hook or HookManager()
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_k = d_model // num_heads
+        self.out_proj = nn.Linear(d_model, d_model, bias=bias)
+        self.in_proj_weight = nn.Parameter(torch.randn((d_model * 3, d_model)))
+        if bias:
+            self.in_proj_bias = nn.Parameter(torch.zeros(d_model * 3))
+        else:
+            self.in_proj_bias = None
+        
+    def scaled_dot_product_attention(self, Q, K, V, mask=None):
+        attn_scores = self.hook("attn_scores", ret=torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.d_k))
+        
+        if mask is not None:
+            attn_scores = attn_scores.masked_fill(mask == 0, -1e9)
+        
+        attn_probs = self.hook("attn_probs", ret=F.softmax(attn_scores, dim=-1))
+        output = self.hook("sdpa_output", ret=torch.matmul(attn_probs, V))
+        return output
+        
+    def split_heads(self, x):
+        batch_size, seq_length, d_model = x.size()
+        return x.view(batch_size, seq_length, self.num_heads, self.d_k).transpose(1, 2)
+        
+    def combine_heads(self, x):
+        batch_size, num_heads, seq_length, d_k = x.size()
+        return x.transpose(1, 2).contiguous().view(batch_size, seq_length, self.d_model)
+        
+    def forward(self, Q, K, V, mask=None):
+        q = F.linear(Q, self.in_proj_weight[:self.d_model, :], self.in_proj_bias[:self.d_model])
+        k = F.linear(K, self.in_proj_weight[self.d_model:2*self.d_model, :], self.in_proj_bias[self.d_model:2*self.d_model])
+        v = F.linear(V, self.in_proj_weight[2*self.d_model:, :], self.in_proj_bias[2*self.d_model:])
+        
+        Q = self.hook("split_heads_q", ret=self.split_heads(q))
+        K = self.hook("split_heads_k", ret=self.split_heads(k))
+        V = self.hook("split_heads_v", ret=self.split_heads(v))
+        
+        attn_output = self.hook("scaled_dot_product_attention", ret=self.scaled_dot_product_attention(Q, K, V, mask))
+        attn_output = self.hook("combine_heads", ret=self.combine_heads(attn_output))
+        output = self.hook("output", ret=self.out_proj(attn_output))
+        return output
+
+
 class SiglipMultiheadAttentionPoolingHead(nn.Module):
     """Multihead Attention Pooling."""
     
@@ -807,14 +855,14 @@ class SiglipMultiheadAttentionPoolingHead(nn.Module):
         super().__init__()
         self.hook = hook or HookManager()
         self.probe = nn.Parameter(torch.randn(1, 1, config.hidden_size))
-        self.attention = torch.nn.MultiheadAttention(config.hidden_size, config.num_attention_heads, batch_first=True)
+        self.attention = MultiHeadAttention(config.hidden_size, config.num_attention_heads)
         self.layernorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.mlp = SiglipMLP(config, hook=self.hook.fork("mlp") if hook else None)
 
     def forward(self, hidden_state):
         batch_size = hidden_state.shape[0]
         probe = self.hook("probe_repeat", ret=self.probe.repeat(batch_size, 1, 1))
-        hidden_state = self.hook("attention", ret=self.attention(probe, hidden_state, hidden_state)[0])
+        hidden_state = self.hook("attention_output", ret=self.attention(probe, hidden_state, hidden_state))
         residual = hidden_state
         hidden_state = self.hook("layernorm", ret=self.layernorm(hidden_state))
         hidden_state = self.hook("mlp", ret=residual + self.mlp(hidden_state))
