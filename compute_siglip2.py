@@ -8,17 +8,34 @@ from pathlib import Path
 from torch.utils.data import DataLoader
 import tqdm
 from utils.factory import create_model_and_transforms, get_tokenizer
-from torchvision.datasets import ImageNet, ImageFolder
-from utils.siglip.modeling_siglip import SiglipVisionModel
+from torchvision.datasets import ImageFolder
+from utils.siglip.modeling_siglip import SiglipVisionModel, SiglipTextModel
 from utils.siglip.processing_siglip import SiglipProcessor
+from transformers import AutoTokenizer
+from utils.openai_templates import OPENAI_IMAGENET_TEMPLATES
+from utils.imagenet_classes import imagenet_classes
+import torch.nn.functional as F
+from typing import Union, Any
+
+
+class ImageNet(ImageFolder):
+    def __init__(self, root: Union[str, Path], split: str = "train", **kwargs: Any) -> None:
+        wnid_to_classes = torch.load(os.path.join(root, "meta.bin"), weights_only=True)[0]
+        super().__init__(os.path.join(root, split), **kwargs)
+
+        self.wnids = self.classes
+        self.wnid_to_idx = self.class_to_idx
+        self.classes = [wnid_to_classes[wnid] for wnid in self.wnids]
+        self.class_to_idx = {cls: idx for idx, clss in enumerate(self.classes) for cls in clss}
+
 
 def get_args_parser():
     parser = argparse.ArgumentParser("Project Residual Stream", add_help=False)
-    parser.add_argument("--batch_size", default=2, type=int, help="Batch size")
+    parser.add_argument("--batch_size", default=256, type=int, help="Batch size")
     # Model parameters
     parser.add_argument(
         "--model",
-        default="google/siglip2-base-patch16-224",
+        default="google/siglip2-so400m-patch14-384",
         type=str,
         help="Name of model to use",
     )
@@ -34,8 +51,24 @@ def get_args_parser():
     return parser
 
 
+def compute_zeroshot_weights(model, tokenizer, classnames, device, templates, use_format=False):
+    model.eval()
+    zeroshot_weights = []
+    with torch.no_grad():
+        for classname in tqdm.tqdm(classnames):
+            texts = [template.format(c=classname) if use_format else template(classname) for template in templates]
+            inputs = tokenizer(texts, truncation=True, padding="max_length", max_length=64, return_tensors="pt")
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            outputs = model(**inputs)
+            class_embedding = F.normalize(outputs.pooler_output, dim=-1).mean(dim=0)
+            class_embedding /= class_embedding.norm()
+            zeroshot_weights.append(class_embedding.cpu())
+    zeroshot_weights = torch.stack(zeroshot_weights, dim=0)
+    return zeroshot_weights
+
+
 def main(args):
-    """Calculates the projected residual stream for a dataset."""
+    """Calculates the projected residual stream for a dataset and zeroshot weights."""
     model = SiglipVisionModel.from_pretrained(args.model)
     model.to(args.device)
     model.eval()
@@ -47,27 +80,45 @@ def main(args):
 
     # Data:
     transform = lambda x: processor(images=x, return_tensors="pt")
-    ds = ImageFolder(root=os.path.join(args.data_path, "val"), transform=transform)
+    ds = ImageNet(root=args.data_path, split="val", transform=transform)
     dataloader = DataLoader(
         ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers
     )
+    # Zeroshot weights for ImageNet
+    print("Computing zeroshot weights for ImageNet...")
+    text_model = SiglipTextModel.from_pretrained(args.model)
+    text_model.to(args.device)
+    tokenizer = AutoTokenizer.from_pretrained(args.model)
+    zeroshot_weights = compute_zeroshot_weights(text_model, tokenizer, imagenet_classes, args.device, templates=OPENAI_IMAGENET_TEMPLATES)
+    np.save(os.path.join(args.output_dir, f"imagenet_zeroshot_weights_{args.model.replace('/', '_')}.npy"), zeroshot_weights.numpy())
+
+
     attention_results = []
     representation_results = []
     mlp_results = []
     
-    for i, (inputs, _) in enumerate(tqdm.tqdm(dataloader)):
+    for i, (inputs, labels) in enumerate(tqdm.tqdm(dataloader)):
         with torch.no_grad():
             inputs['pixel_values'] = inputs['pixel_values'].squeeze(1).to(args.device)
             outputs = model(**inputs)
-            representation_results.append(outputs.pooler_output)
-    # with open(
-    #     os.path.join(args.output_dir, f"{args.dataset}_attn_{args.model}.npy"), "wb"
-    # ) as f:
-    #     np.save(f, np.concatenate(attention_results, axis=0))
-    # with open(
-    #     os.path.join(args.output_dir, f"{args.dataset}_mlp_{args.model}.npy"), "wb"
-    # ) as f:
-    #     np.save(f, np.concatenate(mlp_results, axis=0))
+            representation_results.append(F.normalize(outputs.pooler_output, dim=-1))
+            # Save labels for accuracy calculation
+            if i == 0:
+                all_labels = labels.clone()
+            else:
+                all_labels = torch.cat([all_labels, labels], dim=0)
+
+
+    # Compute accuracy
+    print("Computing accuracy...")
+    image_features = torch.cat(representation_results, dim=0)  # (N, D)
+    zeroshot_weights = zeroshot_weights.to(image_features.device)  # (1000, D)
+    logits = image_features @ zeroshot_weights.t()  # (N, 1000)
+    preds = logits.argmax(dim=1)
+    correct = (preds.cpu() == all_labels).sum().item()
+    total = all_labels.size(0)
+    acc = correct / total * 100
+    print(f"Top-1 accuracy: {acc:.2f}% ({correct}/{total})")
 
 
 if __name__ == "__main__":
