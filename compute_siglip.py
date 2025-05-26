@@ -70,7 +70,37 @@ def compute_zeroshot_weights(model, model_name, tokenizer, classnames, device, t
     zeroshot_weights = torch.stack(zeroshot_weights, dim=0)
     return zeroshot_weights
 
+# Minimal PRS hook for out.post and mlp_output
+class PRSHook:
+    def __init__(self, collapse_attention: bool = False):
+        self.attention_records = []
+        self.mlp_records = []
+        self.collapse_attention = collapse_attention
+    def save_attention(self, ret, **kwargs):
+        if self.collapse_attention:
+            self.attention_records.append(ret.sum(axis=[2,3]).detach().cpu())
+        else:
+            self.attention_records.append(ret.detach().cpu())
+        return ret
+    def save_mlp(self, ret, **kwargs):
+        self.mlp_records.append(ret.detach().cpu())
+        return ret
+    def finalize(self):
+        self.attention_records = torch.cat(self.attention_records, dim=0)
+        self.mlp_records = torch.cat(self.mlp_records, dim=0)
+        return {"attention_records": self.attention_records, "mlp_records": self.mlp_records}
 
+def compute_accuracy(features, labels, zeroshot_weights):
+    features = torch.cat(features, dim=0)  # (N, D)
+    zeroshot_weights = zeroshot_weights.to(features.device)  # (1000, D)
+    logits = features @ zeroshot_weights.t()  # (N, 1000)
+    preds = logits.argmax(dim=1)
+    correct = (preds.cpu() == labels).sum().item()
+    total = labels.size(0) 
+    acc = correct / total * 100
+    return acc, correct, total
+
+@torch.no_grad()
 def main(args):
     """Calculates the projected residual stream for a dataset and zeroshot weights."""
     model = SiglipVisionModel.from_pretrained(args.model)
@@ -96,6 +126,12 @@ def main(args):
     zeroshot_weights = compute_zeroshot_weights(text_model, args.model, tokenizer, imagenet_classes, args.device, templates=OPENAI_IMAGENET_TEMPLATES)
     np.save(os.path.join(args.output_dir, f"imagenet_zeroshot_weights_{args.model.replace('/', '_')}.npy"), zeroshot_weights.numpy())
 
+    
+    prs_hook = PRSHook(collapse_attention=True)
+    
+    # # Register the hook on the model's hook manager
+    model.hook.register('pooling_head.attention.out.post', prs_hook.save_attention)
+    model.hook.register('pooling_head.mlp_output', prs_hook.save_mlp)
 
     attention_results = []
     representation_results = []
@@ -112,17 +148,27 @@ def main(args):
             else:
                 all_labels = torch.cat([all_labels, labels], dim=0)
 
-
     # Compute accuracy
-    print("Computing accuracy...")
-    image_features = torch.cat(representation_results, dim=0)  # (N, D)
-    zeroshot_weights = zeroshot_weights.to(image_features.device)  # (1000, D)
-    logits = image_features @ zeroshot_weights.t()  # (N, 1000)
-    preds = logits.argmax(dim=1)
-    correct = (preds.cpu() == all_labels).sum().item()
-    total = all_labels.size(0)
-    acc = correct / total * 100
-    print(f"Top-1 accuracy: {acc:.2f}% ({correct}/{total})")
+    print("Computing accuracy (representation)...")
+    acc, correct, total = compute_accuracy(representation_results, all_labels, zeroshot_weights)
+    print(f"Top-1 representation accuracy: {acc:.2f}% ({correct}/{total})")
+
+    # Compute accuracy mlp
+    print("Computing accuracy (mlp)...")
+    acc, correct, total = compute_accuracy(mlp_results[:, 0], all_labels, zeroshot_weights)
+    print(f"Top-1 mlp accuracy: {acc:.2f}% ({correct}/{total})")
+    
+    # Compute accuracy attention
+    print("Computing accuracy (attention)...")
+    acc, correct, total = compute_accuracy(attention_results[:, 0], all_labels, zeroshot_weights)
+    print(f"Top-1 attention accuracy: {acc:.2f}% ({correct}/{total})")
+    
+    print("Computing accuracy (attention + mlp for sanity check)...")
+    acc, correct, total = compute_accuracy(mlp_results[:, 0] + attention_results[:, 0], all_labels, zeroshot_weights)
+    print(f"Top-1 attention + mlp accuracy: {acc:.2f}% ({correct}/{total})")
+    
+    # Optionally, save to disk:
+    torch.save(prs_hook.finalize(), os.path.join(args.output_dir, f"siglip_{args.model.replace('/', '_')}_prs.pt"))
 
 
 if __name__ == "__main__":

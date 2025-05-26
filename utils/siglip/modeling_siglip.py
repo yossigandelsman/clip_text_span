@@ -763,12 +763,12 @@ class SiglipVisionTransformer(nn.Module):
         self.config = config
         embed_dim = config.hidden_size
         self.hook = hook or HookManager()
-        self.embeddings = SiglipVisionEmbeddings(config, hook=self.hook.fork("embeddings") if hook else None)
-        self.encoder = SiglipEncoder(config, hook=self.hook.fork("encoder") if hook else None)
+        self.embeddings = SiglipVisionEmbeddings(config, hook=self.hook.fork("embeddings"))
+        self.encoder = SiglipEncoder(config, hook=self.hook.fork("encoder"))
         self.post_layernorm = nn.LayerNorm(embed_dim, eps=config.layer_norm_eps)
         self.use_head = True if not hasattr(config, "vision_use_head") else config.vision_use_head
         if self.use_head:
-            self.head = SiglipMultiheadAttentionPoolingHead(config, hook=self.hook.fork("pooling_head") if hook else None)
+            self.head = SiglipMultiheadAttentionPoolingHead(config, hook=self.hook.fork("pooling_head"))
 
     @can_return_tuple
     def forward(
@@ -831,8 +831,8 @@ class MultiHeadAttention(nn.Module):
     def combine_heads(self, x):
         batch_size, num_heads, seq_length, d_k = x.size()
         return x.transpose(1, 2).contiguous().view(batch_size, seq_length, self.d_model)
-        
-    def forward(self, Q, K, V, mask=None):
+    
+    def forward_direct(self, Q, K, V, mask=None):
         q = F.linear(Q, self.in_proj_weight[:self.d_model, :], self.in_proj_bias[:self.d_model])
         k = F.linear(K, self.in_proj_weight[self.d_model:2*self.d_model, :], self.in_proj_bias[self.d_model:2*self.d_model])
         v = F.linear(V, self.in_proj_weight[2*self.d_model:, :], self.in_proj_bias[2*self.d_model:])
@@ -845,28 +845,64 @@ class MultiHeadAttention(nn.Module):
         attn_output = self.hook("combine_heads", ret=self.combine_heads(attn_output))
         output = self.hook("output", ret=self.out_proj(attn_output))
         return output
+    
+    def forward_per_head(self, Q, K, V, mask=None):
+        q = F.linear(Q, self.in_proj_weight[:self.d_model, :], self.in_proj_bias[:self.d_model])
+        k = F.linear(K, self.in_proj_weight[self.d_model:2*self.d_model, :], self.in_proj_bias[self.d_model:2*self.d_model])
+        v = F.linear(V, self.in_proj_weight[2*self.d_model:, :], self.in_proj_bias[2*self.d_model:])
+        
+        Q = self.hook("split_heads_q", ret=self.split_heads(q))
+        K = self.hook("split_heads_k", ret=self.split_heads(k))
+        V = self.hook("split_heads_v", ret=self.split_heads(v))
+        
+        attn_scores = self.hook("attn_scores", ret=torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.d_k))
+        
+        if mask is not None:
+            attn_scores = attn_scores.masked_fill(mask == 0, -1e9)
+        
+        attn_probs = self.hook("attn_probs", ret=F.softmax(attn_scores, dim=-1))
+        attn_output = self.hook("sdpa_output_extended", ret=torch.einsum("bhnm,bhmd->bhnmd", attn_probs, V))
+        
+        x = self.hook(
+            "out.post",
+            ret=torch.einsum(
+                "bhnmc,dhc->bnmhd",
+                attn_output,
+                self.out_proj.weight.reshape(
+                    self.d_model, self.num_heads, self.d_k
+                ),
+            ),
+        )
+        x = self.hook("out.post_collapse", ret=x.sum(axis=[2, 3]))
+        x = self.hook("out.post_bias", ret=x + self.out_proj.bias)
+        return x
+    
+    def forward(self, Q, K, V, mask=None, per_head=True):
+        if per_head:
+            return self.forward_per_head(Q, K, V, mask)
+        else:
+            return self.forward_direct(Q, K, V, mask)
 
 
 class SiglipMultiheadAttentionPoolingHead(nn.Module):
     """Multihead Attention Pooling."""
     
     def __init__(self, config: SiglipVisionConfig, hook: Optional[HookManager] = None):
-        # This is where we intervene the most!
         super().__init__()
         self.hook = hook or HookManager()
         self.probe = nn.Parameter(torch.randn(1, 1, config.hidden_size))
-        self.attention = MultiHeadAttention(config.hidden_size, config.num_attention_heads)
+        self.attention = MultiHeadAttention(config.hidden_size, config.num_attention_heads, hook=self.hook.fork("attention"))
         self.layernorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.mlp = SiglipMLP(config, hook=self.hook.fork("mlp") if hook else None)
 
     def forward(self, hidden_state):
         batch_size = hidden_state.shape[0]
         probe = self.hook("probe_repeat", ret=self.probe.repeat(batch_size, 1, 1))
-        hidden_state = self.hook("attention_output", ret=self.attention(probe, hidden_state, hidden_state))
+        hidden_state = self.attention(probe, hidden_state, hidden_state)
         residual = hidden_state
         hidden_state = self.hook("layernorm", ret=self.layernorm(hidden_state))
-        hidden_state = self.hook("mlp", ret=residual + self.mlp(hidden_state))
-        return self.hook("output", ret=hidden_state[:, 0])
+        hidden_state = residual + self.hook("mlp_output", ret=self.mlp(hidden_state))
+        return self.hook("pooling_output", ret=hidden_state[:, 0])
 
 
 class SiglipVisionModel(SiglipPreTrainedModel):
