@@ -35,7 +35,7 @@ def get_args_parser():
     # Model parameters
     parser.add_argument(
         "--model",
-        default="google/siglip2-so400m-patch14-384",
+        default="google/siglip-so400m-patch14-384",
         type=str,
         help="Name of model to use",
     )
@@ -51,13 +51,17 @@ def get_args_parser():
     return parser
 
 
-def compute_zeroshot_weights(model, tokenizer, classnames, device, templates, use_format=False):
+def compute_zeroshot_weights(model, model_name, tokenizer, classnames, device, templates, use_format=False):
+    max_length = {'google/siglip2-so400m-patch14-384': 64, 
+                  'google/siglip2-base-patch16-224': 64,
+                  'google/siglip-so400m-patch14-384': 64,
+                  'google/siglip-so400m-patch16-224': 64}
     model.eval()
     zeroshot_weights = []
     with torch.no_grad():
         for classname in tqdm.tqdm(classnames):
             texts = [template.format(c=classname) if use_format else template(classname) for template in templates]
-            inputs = tokenizer(texts, truncation=True, padding="max_length", max_length=64, return_tensors="pt")
+            inputs = tokenizer(texts, truncation=False, padding="max_length", max_length=max_length[model_name], return_tensors="pt")
             inputs = {k: v.to(device) for k, v in inputs.items()}
             outputs = model(**inputs)
             class_embedding = F.normalize(outputs.pooler_output, dim=-1).mean(dim=0)
@@ -72,7 +76,7 @@ def main(args):
     model = SiglipVisionModel.from_pretrained(args.model)
     model.to(args.device)
     model.eval()
-    processor = SiglipProcessor.from_pretrained(args.model)
+    processor = SiglipProcessor.from_pretrained(args.model, use_fast=True)
     print(
         "Model parameters:",
         f"{np.sum([int(np.prod(p.shape)) for p in model.parameters()]):,}",
@@ -89,7 +93,7 @@ def main(args):
     text_model = SiglipTextModel.from_pretrained(args.model)
     text_model.to(args.device)
     tokenizer = AutoTokenizer.from_pretrained(args.model)
-    zeroshot_weights = compute_zeroshot_weights(text_model, tokenizer, imagenet_classes, args.device, templates=OPENAI_IMAGENET_TEMPLATES)
+    zeroshot_weights = compute_zeroshot_weights(text_model, args.model, tokenizer, imagenet_classes, args.device, templates=OPENAI_IMAGENET_TEMPLATES)
     np.save(os.path.join(args.output_dir, f"imagenet_zeroshot_weights_{args.model.replace('/', '_')}.npy"), zeroshot_weights.numpy())
 
 
