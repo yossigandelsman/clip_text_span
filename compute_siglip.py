@@ -43,6 +43,7 @@ def get_args_parser():
     parser.add_argument(
         "--data_path", default="/mnt/data/yossi/ILSVRC2012/", type=str, help="dataset path"
     )
+    parser.add_argument("--save_everything", action="store_true", help="save everything") 
     parser.add_argument("--num_workers", default=10, type=int)
     parser.add_argument(
         "--output_dir", default="./output_dir", help="path where to save"
@@ -76,15 +77,18 @@ class PRSHook:
         self.attention_records = []
         self.mlp_records = []
         self.collapse_attention = collapse_attention
+    
     def save_attention(self, ret, **kwargs):
         if self.collapse_attention:
             self.attention_records.append(ret.sum(axis=[2,3]).detach().cpu())
         else:
             self.attention_records.append(ret.detach().cpu())
         return ret
+    
     def save_mlp(self, ret, **kwargs):
         self.mlp_records.append(ret.detach().cpu())
         return ret
+    
     def finalize(self):
         self.attention_records = torch.cat(self.attention_records, dim=0)
         self.mlp_records = torch.cat(self.mlp_records, dim=0)
@@ -168,8 +172,9 @@ def main(args):
     print(f"Top-1 attention + mlp accuracy: {acc:.2f}% ({correct}/{total})")
     
     # Optionally, save to disk:
-    torch.save(prs_hook.finalize(), os.path.join(args.output_dir, f"siglip_{args.model.replace('/', '_')}_prs.pt"))
-
+    if args.save_everything:
+        torch.save(prs_hook.finalize(), os.path.join(args.output_dir, f"siglip_{args.model.replace('/', '_')}_prs.pt"))
+        
 
 if __name__ == "__main__":
     args = get_args_parser()
