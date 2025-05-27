@@ -4,7 +4,7 @@ from PIL import Image
 import os.path
 import argparse
 from pathlib import Path
-
+from matplotlib import pyplot as plt
 from torch.utils.data import DataLoader
 import tqdm
 from utils.factory import create_model_and_transforms, get_tokenizer
@@ -49,6 +49,7 @@ def get_args_parser():
         "--output_dir", default="./output_dir", help="path where to save"
     )
     parser.add_argument("--device", default="cuda:0", help="device to use for testing")
+    parser.add_argument("--compute_text_spans", action="store_true", help="compute text spans")
     parser.add_argument("--text_descriptions", default="text_descriptions/image_descriptions_general.txt", type=str, help="text descriptions to use")
     return parser
 
@@ -220,21 +221,41 @@ def main(args):
         print(f"Saved text features to {text_features_path}")
     print(f"Text features shape: {text_features.shape}")
     non_spatial_results = attn_results[:, 0] # (N, h, D)
-    print(f"Non-spatial results shape: {non_spatial_results.shape}")
-    print(f"Text features shape: {text_features.shape}")
-    for head in range(non_spatial_results.shape[1]):
-        reconstruct, results = replace_with_iterative_removal(
-            non_spatial_results[:, head].detach().cpu().numpy(),
-            text_features,
-            lines,
-            non_spatial_results.shape[-1],
-            non_spatial_results.shape[-1],
-            args.device)
-        print('--------------------------------')
-        print(f"Head {head}")
-        for text in results:
-            print(text.replace('\n', ''))
-        print("--------------------------------")
+    non_spatial_results_centered = non_spatial_results - non_spatial_results.mean(dim=0, keepdim=True) # (1, h, D)
+    # Check how orthogonal the heads are
+    print("Checking how orthogonal the heads are...")
+    orthogonalities = torch.zeros((non_spatial_results.shape[1], non_spatial_results.shape[1]))
+    for batch_idx in range(0, non_spatial_results.shape[0], args.batch_size):
+        examples =  non_spatial_results_centered[batch_idx:batch_idx+args.batch_size]
+        orthogonalities += torch.abs(torch.einsum('nhd,ngd->nhg', 
+                                     F.normalize(examples, dim=-1), 
+                                     F.normalize(examples, dim=-1))).sum(dim=0).detach().cpu()
+    orthogonalities = orthogonalities.detach().cpu().numpy() / (non_spatial_results.shape[0])
+    with open(os.path.join(args.output_dir, f'{name}_{args.model.replace('/', '_')}_orthogonalities.npy'), 'wb') as f:
+        np.save(f, orthogonalities)
+    plt.figure(figsize=(10, 10))
+    plt.imshow(orthogonalities - np.eye(orthogonalities.shape[0]))
+    plt.colorbar()
+    plt.savefig(os.path.join(args.output_dir, f'{name}_{args.model.replace('/', '_')}_orthogonalities.pdf'))
+    plt.close()
+    print(f"Saved orthogonalities to {os.path.join(args.output_dir, f'{name}_{args.model.replace('/', '_')}_orthogonalities.npy')}")
+    
+    if args.compute_text_spans:
+        print(f"Non-spatial results shape: {non_spatial_results.shape}")
+        print(f"Text features shape: {text_features.shape}")
+        for head in range(non_spatial_results.shape[1]):
+            reconstruct, results = replace_with_iterative_removal(
+                non_spatial_results[:, head].detach().cpu().numpy(),
+                text_features,
+                lines,
+                non_spatial_results.shape[-1],
+                non_spatial_results.shape[-1],
+                args.device)
+            print('--------------------------------')
+            print(f"Head {head}")
+            for text in results:
+                print(text.replace('\n', ''))
+            print("--------------------------------")
                                    
 
 if __name__ == "__main__":
